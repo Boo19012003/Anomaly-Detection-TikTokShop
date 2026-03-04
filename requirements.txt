@@ -2,3 +2,4 @@ playwright
 pandas
 python-dotenv
 psycopg2
+supabase

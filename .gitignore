@@ -1,9 +1,30 @@
-# Byte-compiled / optimized / DLL files
-.venv
+# Environments
+.venv/
+.env
 
-# file
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE configuration
+.idea/
+.vscode/
+
+# Log files
+*.log
+
+# Databases
+*.db
+*.sqlite3
+
+# Data files and outputs
 tiktok_user_data/
-body.html
-tiktok_shop_products.csv
-tiktok_shop_products_cleaned.csv
-captcha.html
+reviews/
+*.csv
+*.html
+
