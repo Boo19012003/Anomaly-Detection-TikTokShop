@@ -35,8 +35,20 @@ __pycache__/
 auth/state.json
 
 # Dataset images (large files, not needed in repo)
-app/dataset/raw_images/
+app/dataset/
 auth
 *.jpg
 *.jpeg
 *.png
+
+# Crawler utility & dev files (not for production repo)
+app/crawler/captcha_solver.py
+app/crawler/captcha_solver_async.py
+app/crawler/crawl_images_captcha.py
+app/crawler/products.py
+app/crawler/reviews.py
+app/crawler/reviews_async.py
+app/crawler/test.py
+
+# Jupyter Notebooks
+*.ipynb
