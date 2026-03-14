@@ -1,5 +1,12 @@
+# Web Scraping & Automation
 playwright
-pandas
+requests
+
+# Database & Environment
 python-dotenv
-psycopg2
 supabase
+
+# Computer Vision & Machine Learning
+opencv-python
+numpy
+ultralytics

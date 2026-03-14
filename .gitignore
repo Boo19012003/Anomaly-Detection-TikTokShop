@@ -23,8 +23,20 @@ __pycache__/
 *.sqlite3
 
 # Data files and outputs
-tiktok_user_data/
-reviews/
+/response_web
 *.csv
 *.html
 
+# ML model files
+*.pt
+*.pth
+
+# Auth & session data (sensitive)
+auth/state.json
+
+# Dataset images (large files, not needed in repo)
+app/dataset/raw_images/
+auth
+*.jpg
+*.jpeg
+*.png
