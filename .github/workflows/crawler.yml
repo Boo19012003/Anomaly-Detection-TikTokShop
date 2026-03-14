@@ -74,6 +74,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
         run: |
           echo "SUPABASE_URL=$SUPABASE_URL" >> .env
           echo "SUPABASE_KEY=$SUPABASE_KEY" >> .env
@@ -84,5 +85,6 @@ jobs:
       - name: Run TikTok crawler
         env:
           HEADLESS: "true"
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
         run: |
           python app/crawler/collect_data.py

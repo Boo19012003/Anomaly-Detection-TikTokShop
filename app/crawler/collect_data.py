@@ -520,7 +520,17 @@ async def crawler():
         ]
 
         logger.info("Mở trình duyệt Crawl...")
-        browser = await p.chromium.launch(headless=os.getenv("HEADLESS", "true").lower() != "false", channel="chrome", args=args)
+        proxy_server = os.getenv("PROXY_SERVER")  # vd: "http://user:pass@proxy-host:port"
+        launch_args = dict(
+            headless=os.getenv("HEADLESS", "true").lower() != "false",
+            channel="chrome",
+            args=args,
+        )
+        if proxy_server:
+            launch_args["proxy"] = {"server": proxy_server}
+            logger.info(f"Dùng proxy: {proxy_server.split('@')[-1]}")  # ẩn user:pass
+
+        browser = await p.chromium.launch(**launch_args)
         state_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "auth", "state.json"))
         
         USER_AGENTS = [

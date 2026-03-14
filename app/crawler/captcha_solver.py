@@ -93,11 +93,21 @@ async def human_mouse_drag(page, source_el, x_distance):
     await page.mouse.up()
 
 
+
+# Đường dẫn tuyệt đối đến model, ưu tiên env var YOLO_MODEL_PATH
+_script_dir  = os.path.abspath(os.path.dirname(__file__))
+_model_name  = os.getenv("YOLO_MODEL_PATH", "solver_captcha_tiktokshop.pt")
+# Nếu là tên file (không có dấu /), ghép với thư mục script
+if not os.path.isabs(_model_name):
+    _model_name = os.path.join(_script_dir, _model_name)
+
 try:
-    yolo_model = YOLO('best.pt') 
+    yolo_model = YOLO(_model_name)
+    logger.info(f"[System] Đã tải mô hình YOLO: {_model_name}")
 except Exception as e:
     logger.error(f"[System] Lỗi tải mô hình YOLO: {e}")
     yolo_model = None
+
 
 async def solve_tiktok_captcha(page):
     if yolo_model is None:
