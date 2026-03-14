@@ -42,6 +42,7 @@ auth
 *.png
 
 # Crawler utility & dev files (not for production repo)
+app/crawler/test.py
 
 # Jupyter Notebooks
 *.ipynb
