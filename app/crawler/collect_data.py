@@ -519,7 +519,7 @@ async def crawler():
         ]
 
         logger.info("Mở trình duyệt Crawl...")
-        browser = await p.chromium.launch(headless=False, channel="chrome", args=args)
+        browser = await p.chromium.launch(headless=os.getenv("HEADLESS", "true").lower() != "false", channel="chrome", args=args)
         state_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "auth", "state.json"))
         
         USER_AGENTS = [
