@@ -265,6 +265,7 @@ async def extract_tiktok_data(json_data_list):
                     "category": category_name,
                     "title": product_detail.get("name"),
                     "description": await parse_tiktok_description(product_detail.get("description")),
+                    "product_url": url,
                 }
 
             if product_id and product_id not in products_metrics_history:

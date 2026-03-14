@@ -1,0 +1,78 @@
+name: Update Products Metrics (Every 4h)
+
+on:
+  # Chạy mỗi 4 giờ: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 (UTC)
+  # Tương ứng 07:00, 11:00, 15:00, 19:00, 23:00, 03:00 (UTC+7)
+  schedule:
+    - cron: '0 */4 * * *'
+
+  # Cho phép chạy thủ công từ GitHub UI
+  workflow_dispatch:
+
+jobs:
+  update-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Install HuggingFace Hub
+        run: pip install huggingface_hub
+
+      - name: Download captcha solver model
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          import shutil, os
+
+          model_path = hf_hub_download(
+              repo_id="Boo1901/anomaly-detection-tiktokshop",
+              filename="solver_captcha_tiktokshop.pt",
+              token=os.environ["HF_TOKEN"],
+          )
+          dest = "app/crawler/solver_captcha_tiktokshop.pt"
+          shutil.copy(model_path, dest)
+          print(f"✅ Model downloaded to {dest}")
+          EOF
+
+      - name: Restore TikTok auth session
+        env:
+          TIKTOK_STATE_JSON: ${{ secrets.TIKTOK_STATE_JSON }}
+        run: |
+          mkdir -p auth
+          echo "$TIKTOK_STATE_JSON" > auth/state.json
+          echo "✅ auth/state.json restored"
+
+      - name: Create .env file
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          echo "SUPABASE_URL=$SUPABASE_URL" >> .env
+          echo "SUPABASE_KEY=$SUPABASE_KEY" >> .env
+          echo "HEADLESS=true" >> .env
+
+      - name: Run metrics update
+        env:
+          HEADLESS: "true"
+        run: |
+          python app/crawler/update_metrics.py
