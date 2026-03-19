@@ -15,19 +15,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("CaptchaSolver")
 
 def generate_tracks(distance):
-    """
-    Tạo quỹ đạo trượt mô phỏng chuyển động tay người:
-    - Sử dụng hàm Easing (smooth step) để đầu nhanh, cuối chậm.
-    - Không bị phụ thuộc vào biến số vật lý cố định (tránh lỗi vòng lặp/vận tốc thấp).
-    """
+    """Simulating humman mouse drag"""
     tracks = []
     current = 0
-    # Số lượng bước kéo ngẫu nhiên để giống người
     steps = random.randint(25, 45)
     
     for i in range(1, steps + 1):
         t = i / steps
-        # Hàm easing kết hợp: t^2 * (3 - 2*t) - mượt tại cả bắt đầu và kết thúc
         ease_t = t * t * (3 - 2 * t)
         
         target = distance * ease_t
@@ -38,12 +32,9 @@ def generate_tracks(distance):
         if track > 0:
             tracks.append(track)
             
-    # Tính tổng quãng đường để điều chỉnh sai số
     track_sum = sum(tracks)
-    # Nếu chưa tới đích do làm tròn
     if track_sum < distance:
         tracks.append(distance - track_sum)
-    # Nếu lố, kéo lùi lại một chút (có độ tự nhiên)
     elif track_sum > distance:
         tracks.append(distance - track_sum)
         
@@ -54,13 +45,11 @@ async def human_mouse_drag(page, source_el, x_distance):
     start_x = box["x"] + box["width"] / 2
     start_y = box["y"] + box["height"] / 2
 
-    # Di chuyển chuột vào nút
     await page.mouse.move(start_x, start_y, steps=random.randint(5, 10))
     await asyncio.sleep(random.uniform(0.12, 0.24))
     await page.mouse.down()
     await asyncio.sleep(random.uniform(0.1, 0.2))
 
-    # Lấy danh sách khoảng cách di chuyển
     tracks = generate_tracks(x_distance)
     
     current_x = start_x
@@ -68,50 +57,43 @@ async def human_mouse_drag(page, source_el, x_distance):
 
     for track in tracks:
         current_x += track
-        # Thêm dao động ngẫu nhiên trên trục y
         y_wobble = current_y + random.uniform(-1.5, 1.5)
         
         await page.mouse.move(current_x, y_wobble)
         
-        # Độ trễ không đều
         await asyncio.sleep(random.uniform(0.01, 0.03))
 
     target_x = start_x + x_distance
 
-    # Hiệu ứng kéo lố một chút rồi giật lại (overshoot correction)
     if random.random() > 0.4:
         overshoot = random.uniform(2, 5)
         await page.mouse.move(target_x + overshoot, current_y + random.uniform(-1, 1), steps=2)
         await asyncio.sleep(random.uniform(0.05, 0.15))
         await page.mouse.move(target_x, current_y, steps=3)
 
-    # Đảm bảo con trỏ ở đúng vị trí cuối cùng
     await page.mouse.move(target_x, current_y, steps=2)
     
-    # Khựng lại một tí trước khi nhả chuột
     await asyncio.sleep(random.uniform(0.2, 0.4))
     await page.mouse.up()
 
 
 
-# Đường dẫn tuyệt đối đến model, ưu tiên env var YOLO_MODEL_PATH
 _script_dir  = os.path.abspath(os.path.dirname(__file__))
 _model_name  = os.getenv("YOLO_MODEL_PATH", "solver_captcha_tiktokshop.pt")
-# Nếu là tên file (không có dấu /), ghép với thư mục script
 if not os.path.isabs(_model_name):
     _model_name = os.path.join(_script_dir, _model_name)
 
 try:
     yolo_model = YOLO(_model_name)
-    logger.info(f"[System] Đã tải mô hình YOLO: {_model_name}")
+    logger.info(f"Loading YOLO model")
 except Exception as e:
-    logger.error(f"[System] Lỗi tải mô hình YOLO: {e}")
+    logger.error(f"Loading YOLO model failed: {e}")
     yolo_model = None
 
 
 async def solve_tiktok_captcha(page):
     if yolo_model is None:
-        logger.error("[Solver] Không thể giải Captcha vì mô hình YOLO chưa được tải.")
+        logger.error("Cannot solve captcha because YOLO model is not loaded.")
         return "failed"
 
     bg_img = None
@@ -126,7 +108,7 @@ async def solve_tiktok_captcha(page):
         bg_url = await bg_element.get_attribute("src")
 
         if not bg_url:
-            logger.warning("[Solver] Không lấy được URL ảnh nền.")
+            logger.warning("Cannot get background image URL.")
             return "failed"
 
         response = await page.request.get(bg_url, timeout=5000)
@@ -138,7 +120,7 @@ async def solve_tiktok_captcha(page):
         boxes = results[0].boxes
 
         if len(boxes) == 0:
-            logger.warning("[Solver] YOLO không nhận diện được lỗ hổng trên ảnh này.")
+            logger.warning("YOLO cannot detect the hole in this image.")
             return "failed"
 
         best_box = boxes[0]
@@ -153,12 +135,11 @@ async def solve_tiktok_captcha(page):
 
         slider_btn = page.locator(".secsdk-captcha-drag-icon").first
         if await slider_btn.count() == 0:
-            logger.warning("[Solver] Không tìm thấy nút kéo slider.")
+            logger.warning("Not found slider button.")
             return "failed"
         
         await human_mouse_drag(page, slider_btn, final_distance)
 
-        # Đợi tối đa 2 giây để captcha biến mất, nếu vượt quá sẽ xử lý là failed
         try:
             await page.wait_for_selector("#captcha-verify-image", state="hidden", timeout=2000)
         except:
@@ -170,5 +151,5 @@ async def solve_tiktok_captcha(page):
             return "failed"
 
     except Exception as e:
-        logger.error(f"[Solver] Lỗi trong quá trình giải Captcha: {e}")
+        logger.error(f"Error in captcha solving process: {e}")
         return "failed"
