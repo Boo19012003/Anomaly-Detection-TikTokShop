@@ -40,6 +40,7 @@ app/dataset/
 *.jpeg
 *.png
 *.json
+*.sql
 
 # Crawler dev/test files (not for production repo)
 app/crawler/captcha_solver_async.py

@@ -136,7 +136,7 @@ async def extract_tiktok_data(json_data_list):
                 products_metrics_history[product_id] = {
                     "product_id": product_id,
                     "origin_price": await parse_number(origin_price),
-                    "price": await parse_number(sale_price),
+                    "sale_price": await parse_number(sale_price),
                     "discount_percent": int(float(discount_decimal) * 100) if discount_decimal else 0,
                     "quantity": total_quantity,
                     "sold_count": await parse_number(product_model.get("sold_count", "0")),
@@ -177,7 +177,7 @@ async def extract_tiktok_data(json_data_list):
                             "sku_id": rev.get("sku_id"),
                             "sku_specification": rev.get("sku_specification"),
                             "rating": rev.get("review_rating"), 
-                            "text": parsed_text,
+                            "text": await parse_tiktok_description(parsed_text),
                             "is_verified": rev.get("is_verified_purchase", False),
                             "review_time": dt_obj.isoformat() if dt_obj else None
                         }

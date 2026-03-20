@@ -24,6 +24,12 @@ async def process_product_url(browser, context_args, href):
 
     structured_data = await extract_tiktok_data(raw_data)
 
+    with open(f"raw_data.json", "w", encoding="utf-8") as f:
+        json.dump(raw_data, f, ensure_ascii=False, indent=4)
+
+    with open(f"Structured_data.json", "w", encoding="utf-8") as f:
+        json.dump(structured_data, f, ensure_ascii=False, indent=4)
+        
     await upsert_to_supabase(structured_data)
 
 async def collect_url_product(browser, context_args, name, url, semaphore):
@@ -61,7 +67,7 @@ async def collect_url_product(browser, context_args, name, url, semaphore):
                     cat_links_list.append(href)
                     
                     # Processing directly
-                    # await process_product_url(browser, context_args, href)
+                    await process_product_url(browser, context_args, href)
 
             logger.info(f"{name} collected & sequentially processed {len(cat_links_list)} links")
             return cat_links_list

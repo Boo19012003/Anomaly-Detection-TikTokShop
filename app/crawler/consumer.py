@@ -9,13 +9,22 @@ logger = get_logger("Consumer")
 async def select_star_filter(page, star_value: str):
     try:
         filter_container = page.locator('.review-filter-star-select-container-MaTvEI')
-        await filter_container.click(timeout=2000)
+        dropdown_btn = filter_container.locator('[data-testid="tux-web-select"]').first
         
-        option_to_click = page.locator('.tux-menu-item').get_by_text(star_value, exact=True)
-        await option_to_click.click(timeout=2000)
+        await dropdown_btn.wait_for(state="visible", timeout=5000)
+        await dropdown_btn.click(timeout=3000, force=True)
+        
+        await page.wait_for_timeout(500)
+        
+        option_to_click = page.locator(f'.tux-menu-item:has-text("{star_value}")').first
+        
+        await option_to_click.wait_for(state="visible", timeout=3000)
+        await option_to_click.click(timeout=3000, force=True)
+        
+        await page.wait_for_timeout(1000)
 
     except Exception as e:
-        logger.error(f"Error selecting star filter: {e}")
+        logger.error(f"Error selecting star filter {star_value}: {e}")
 
 async def crarwl_data_product(browser, context_args, url):
     context = await browser.new_context(**context_args)
@@ -70,13 +79,17 @@ async def crarwl_data_product(browser, context_args, url):
             await solve_captcha_async(page)
         
         try:
-            sort_container = page.locator('div.flex-col:has-text("Sort by")').first
-            dropdown_btn = sort_container.locator('[data-testid="tux-web-select"]').first
-            
-            await dropdown_btn.click()
-            
-            option_to_click = page.locator('.tux-menu-item').get_by_text("Most recent", exact=True)
-            await option_to_click.click(timeout=2000)
+            dropdown_btn = page.locator('[data-testid="tux-web-select"]').first
+            await dropdown_btn.click(timeout=5000, force=True)
+
+            await page.wait_for_timeout(500)
+
+            option_to_click = page.locator('.tux-menu-item:has-text("Most recent")').first
+
+            await option_to_click.wait_for(state="visible", timeout=3000)
+            await option_to_click.click(timeout=3000, force=True)
+
+            await page.wait_for_timeout(1000)
 
         except Exception as e:
             logger.error(f"Error sorting reviews: {e}")
@@ -89,7 +102,6 @@ async def crarwl_data_product(browser, context_args, url):
                     await solve_captcha_async(page)
                     await page.wait_for_timeout(2000)
                 
-                # We need to wait for the first response after clicking a star filter
                 try:
                     async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=10000) as first_res_info:
                         await select_star_filter(page, s)
@@ -103,7 +115,6 @@ async def crarwl_data_product(browser, context_args, url):
                             valid_reviews_count += 1
                 except Exception as e:
                     logger.error(f"Error parsing initial reviews for star {s}: {e}")
-                    # fallback in case it times out, though we still try to paginate
                     await select_star_filter(page, s)
 
                 next_button = page.locator('div.flex.items-center:has(div.Headline-Semibold:text-is("Next"))')
@@ -122,7 +133,6 @@ async def crarwl_data_product(browser, context_args, url):
                         async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=10000) as response_info:
                             await next_button.click(timeout=2000)
                         
-                        # Parse the response to count valid reviews
                         response = await response_info.value
                         try:
                             json_data = await response.json()
