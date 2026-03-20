@@ -32,7 +32,7 @@ async def check_captcha_visible(page):
 
 async def solve_captcha_async(page):
     captcha_count = 0
-    max_retries = 5
+    max_retries = 10
     while captcha_count < max_retries:
         try:
             status = await solve_tiktok_captcha(page)
