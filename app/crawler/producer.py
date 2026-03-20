@@ -3,7 +3,7 @@ import json
 from playwright.async_api import async_playwright
 
 from app.config.settings import get_logger
-from app.crawler.browser import check_captcha_visible, solve_captcha_async, init_browser_context
+from app.crawler.browser import check_captcha_visible, solve_captcha_async, init_browser_context, intercept_route
 from app.crawler.consumer import crarwl_data_product
 from app.parser.review_parser import extract_tiktok_data, extract_json_from_html_sync
 from app.database.crud import upsert_to_supabase
@@ -23,6 +23,7 @@ async def process_product_url(browser, context_args, href):
                 logger.error(f"HTML parse error: {e}")
 
     structured_data = await extract_tiktok_data(raw_data)
+
     await upsert_to_supabase(structured_data)
 
 async def collect_url_product(browser, context_args, name, url, semaphore):
@@ -31,10 +32,11 @@ async def collect_url_product(browser, context_args, name, url, semaphore):
     """
     async with semaphore:
         context = await browser.new_context(**context_args)
+        await context.route("**/*", intercept_route)
         page = await context.new_page()
         cat_links_list = []
         try:
-            await page.goto(url, timeout=10000)
+            await page.goto(url, timeout=30000)
             while True:
                 if await check_captcha_visible(page):
                     await solve_captcha_async(page)
@@ -59,9 +61,9 @@ async def collect_url_product(browser, context_args, name, url, semaphore):
                     cat_links_list.append(href)
                     
                     # Processing directly
-                    await process_product_url(browser, context_args, href)
+                    # await process_product_url(browser, context_args, href)
 
-            logger.info(f"✅ {name} collected & sequentially processed {len(cat_links_list)} links")
+            logger.info(f"{name} collected & sequentially processed {len(cat_links_list)} links")
             return cat_links_list
 
         except Exception as e:
@@ -70,12 +72,67 @@ async def collect_url_product(browser, context_args, name, url, semaphore):
             await page.close()
             await context.close()
 
+async def collect_category_links(browser, context_args):
+    """
+    Đi tới trang chủ, giải captcha (nếu có) và thu thập link của các danh mục mục tiêu.
+    """
+    context = await browser.new_context(**context_args)
+    await context.route("**/*", intercept_route)
+    home_page = await context.new_page()
+    await home_page.goto("https://www.tiktok.com/shop/vn", timeout=30000)
+    
+    try:
+        await home_page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        pass
+
+    if await check_captcha_visible(home_page):
+        await solve_captcha_async(home_page)
+
+    try:
+        await home_page.wait_for_selector('a[href*="/c/"]', timeout=10000)
+    except Exception:
+        logger.warning("Not found category links")
+
+    target_categories = [
+        "Womenswear & Underwear", 
+        "Menswear & Underwear", 
+        "Beauty & Personal Care"
+    ]
+    cat_links = []
+    
+    cat_elements = await home_page.query_selector_all('a[href*="/c/"]')
+    
+    for cat in cat_elements:
+        name = (await cat.inner_text()).strip()
+        if name in target_categories:
+            url = await cat.get_attribute('href')
+            cat_links.append({"name": name, "url": url})
+    
+    logger.info(f"Taked {len(cat_links)} target categories.")
+    for cat in cat_links:
+        logger.info(f"Category: {cat['name']} - {cat['url']}")
+
+    await home_page.close()
+    await context.close()
+    return cat_links
+
 async def run_pipeline():
     async with async_playwright() as p:
         browser, context, context_args = await init_browser_context(p)
-        logger.info("Pipeline started... Testing with 1 URL mode")
+        logger.info("Pipeline started")
+
+        # cat_links = await collect_category_links(browser, context_args)
         
-        test_url = "https://www.tiktok.com/shop/vn/pdp/dau-goi-thao-duoc-namnung-chiet-xuat-thien-nhien-185ml/1730089185693370633"
+        # MAX_CONCURRENT_TABS = 3
+        # semaphore = asyncio.Semaphore(MAX_CONCURRENT_TABS)
+        
+        # tasks = [asyncio.create_task(collect_url_product(browser, context_args, cat["name"], cat["url"], semaphore)) for cat in cat_links]
+        # await asyncio.gather(*tasks)
+
+
+        logger.info("Testing with 1 URL mode")
+        test_url = "https://www.tiktok.com/shop/vn/pdp/ma-y-massage-ca-m-tay-mini-ma-t-xa-4-%C4%91a-u-6-che-%C4%91o-ai-cam-bien-luc/1731145672550746972"
         await process_product_url(browser, context_args, test_url)
         
         await context.close()

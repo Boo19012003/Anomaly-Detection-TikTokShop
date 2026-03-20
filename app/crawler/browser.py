@@ -2,15 +2,7 @@ import os
 import random
 import asyncio
 from playwright.async_api import async_playwright
-import sys
-
-# Ensure captcha solver is in path or natively importable.
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ml_models")))
-try:
-    from app.ml_models.captcha_solver import solve_tiktok_captcha
-except ImportError:
-    from captcha_solver import solve_tiktok_captcha
-
+from app.ml_models.captcha_solver import solve_tiktok_captcha
 from app.config.settings import USER_AGENTS, get_logger
 
 logger = get_logger("BrowserUtils")

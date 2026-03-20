@@ -36,10 +36,10 @@ auth/state.json
 
 # Dataset images (large files, not needed in repo)
 app/dataset/
-auth
 *.jpg
 *.jpeg
 *.png
+*.json
 
 # Crawler dev/test files (not for production repo)
 app/crawler/captcha_solver_async.py
@@ -48,6 +48,12 @@ app/crawler/products.py
 app/crawler/reviews.py
 app/crawler/reviews_async.py
 app/crawler/test.py
+
+# Data files
+data/
+
+# Logs
+logs/
 
 # Jupyter Notebooks
 *.ipynb
