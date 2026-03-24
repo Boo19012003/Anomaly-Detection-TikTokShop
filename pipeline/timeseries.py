@@ -16,8 +16,8 @@ from app.database.crud import get_product_links_from_supabase
 
 logger = get_logger("TimeseriesPipeline")
 
-async def process_timeseries(browser, href, semaphore):
-    raw_data = await crawl_data_product(browser, href, semaphore)
+async def process_timeseries(browser, url, semaphore):
+    raw_data = await crawl_data_product(browser, url, semaphore)
     
     for idx, item in enumerate(raw_data):
         if item.get("type") == "html":
@@ -38,10 +38,9 @@ async def run_pipeline():
         await context.route("**/*", intercept_route)
         logger.info("Pipeline started")
 
-        #Gọi supabase và lấy link các sản phẩm
         product_links = await get_product_links_from_supabase()
         logger.info(f"Found {len(product_links)} product links")
-        MAX_PRODUCT_TABS = 5
+        MAX_PRODUCT_TABS = 3
         product_semaphore = asyncio.Semaphore(MAX_PRODUCT_TABS)
         tasks = [
             asyncio.create_task(process_timeseries(context, product_link, product_semaphore)) 

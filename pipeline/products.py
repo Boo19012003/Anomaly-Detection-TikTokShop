@@ -171,7 +171,7 @@ async def run_pipeline():
         browser_3, context_3, _ = await init_browser_context(p)
         await context_3.route("**/*", intercept_route)
 
-        MAX_PRODUCT_TABS = 5
+        MAX_PRODUCT_TABS = 3
         product_semaphore = asyncio.Semaphore(MAX_PRODUCT_TABS)
         
         tasks_3 = [

@@ -1,23 +1,25 @@
 import asyncio
 import sys
 import os
+import json
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.config.settings import get_logger
-from app.crawler.browser import init_browser_context
+from app.crawler.browser import init_browser_context, intercept_route
 from app.crawler.crawler import crawl_data_review
 from app.parser.review_parser import extract_review
 from app.parser.nlp_utils import extract_json_from_html
-from app.database.crud import upsert_to_supabase
+from app.database.crud import upsert_to_supabase, get_uncrawled_product_links_from_supabase, mark_product_as_crawled
 from playwright.async_api import async_playwright
-from app.database.crud import get_product_links_from_supabase
 
 logger = get_logger("ReviewPipeline")
 
-async def process_review(browser, context_args, href):
-    logger.info(f"Processing product details for: {href}")
-    raw_data = await crawl_data_review(browser, context_args, href)
+async def process_review(context, url, semaphore):
+    raw_data = await crawl_data_review(context, url, semaphore)
+
+    with open("raw_data.json", "w", encoding="utf-8") as f:
+        json.dump(raw_data, f, ensure_ascii=False, indent=4)
     
     for idx, item in enumerate(raw_data):
         if item.get("type") == "html":
@@ -28,19 +30,34 @@ async def process_review(browser, context_args, href):
                 logger.error(f"HTML parse error: {e}")
 
     structured_data = await extract_review(raw_data)
-        
+            
     await upsert_to_supabase(structured_data)
+    await mark_product_as_crawled(url)
 
 
 async def run_pipeline():
     async with async_playwright() as p:
-        browser, context, context_args = await init_browser_context(p)
+        browser, context, _ = await init_browser_context(p)
+        await context.route("**/*", intercept_route)
         logger.info("Pipeline started")
 
-        #Gọi supabase và lấy link các sản phẩm
-        product_links = await get_product_links_from_supabase()
-        for product_link in product_links:
-            await process_review(browser, context_args, product_link)
+        while True:
+            product_links = await get_uncrawled_product_links_from_supabase(limit=9)
+
+            if not product_links:
+                logger.info("No product links found. Retrying in 10 minutes...")
+                await asyncio.sleep(600)
+                continue
+
+            logger.info(f"Processing batch of {len(product_links)} products")
+            MAX_PRODUCT_TABS = 3
+            review_semaphore = asyncio.Semaphore(MAX_PRODUCT_TABS)
+            tasks = [
+                asyncio.create_task(process_review(context, product_link, review_semaphore)) 
+                for product_link in product_links
+            ]
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
         
         await context.close()
         await browser.close()
