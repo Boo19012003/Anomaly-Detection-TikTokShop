@@ -17,18 +17,23 @@ from app.database.crud import upsert_to_supabase
 logger = get_logger("ProductPipeline")
 
 async def process_product_url(context, href, semaphore):
-    raw_data = await crawl_data_product(context, href, semaphore)
-    
-    for idx, item in enumerate(raw_data):
-        if item.get("type") == "html":
-            try:
-                chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
-                raw_data.extend(chunks)
-            except Exception as e:
-                logger.error(f"HTML parse error: {e}")
+    logger.info(f"Start processing product URL: {href}")
+    try:
+        raw_data = await crawl_data_product(context, href, semaphore)
+        
+        for idx, item in enumerate(raw_data):
+            if item.get("type") == "html":
+                try:
+                    chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
+                    raw_data.extend(chunks)
+                except Exception as e:
+                    logger.error(f"HTML parse error for {href}: {e}")
 
-    structured_data = await extract_product(raw_data)
-    await upsert_to_supabase(structured_data)
+        structured_data = await extract_product(raw_data)
+        await upsert_to_supabase(structured_data)
+        logger.info(f"Successfully processed product URL: {href}")
+    except Exception as e:
+        logger.error(f"Failed to process product URL: {href} - Error: {e}")
 
 async def collect_url_product(context, name, url, semaphore):
     async with semaphore:

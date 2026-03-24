@@ -58,3 +58,7 @@ logs/
 
 # Jupyter Notebooks
 *.ipynb
+.gitnexus
+CLAUDE.md
+AGENTS.md
+.claude

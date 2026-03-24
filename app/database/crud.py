@@ -10,23 +10,32 @@ async def upsert_to_supabase(structured_data):
         return
         
     try:
+        inserted_any = False
         if structured_data.get("shops"):
             supabase.table("shops").upsert(structured_data["shops"]).execute()
+            inserted_any = True
             
         if structured_data.get("products"):
             supabase.table("products").upsert(structured_data["products"]).execute()
+            inserted_any = True
 
         if structured_data.get("products_metrics_history"):
             supabase.table("products_metrics_history").insert(structured_data["products_metrics_history"]).execute()
+            inserted_any = True
             
         if structured_data.get("reviews"):
             reviews = structured_data["reviews"]
-            batch_size = 100
-            for i in range(0, len(reviews), batch_size):
-                batch = reviews[i:i+batch_size]
-                supabase.table("reviews").upsert(batch).execute()
+            if reviews:
+                batch_size = 100
+                for i in range(0, len(reviews), batch_size):
+                    batch = reviews[i:i+batch_size]
+                    supabase.table("reviews").upsert(batch).execute()
+                inserted_any = True
 
-        logger.info(f"Upserted to Supabase successfully")
+        if inserted_any:
+            logger.info("Upserted to Supabase successfully")
+        else:
+            logger.warning("No data found to upsert to Supabase")
         
     except Exception as e:
         logger.error(f"Supabase upsert error: {e}")
@@ -41,3 +50,23 @@ async def get_product_links_from_supabase():
     except Exception as e:
         logger.error(f"Supabase upsert error: {e}")
         return []
+
+async def get_uncrawled_product_links_from_supabase(limit=10):
+    if not supabase:
+        logger.warning("Supabase client not available, skipping fetch")
+        return []
+    try:
+        # Lấy các sản phẩm có is_review_crawled là False hoặc Null
+        response = supabase.table("products").select("product_url").or_("is_review_crawled.is.null,is_review_crawled.eq.false").limit(limit).execute()
+        return [row["product_url"] for row in response.data]
+    except Exception as e:
+        logger.error(f"Supabase fetch uncrawled links error: {e}")
+        return []
+
+async def mark_product_as_crawled(url: str):
+    if not supabase:
+        return
+    try:
+        supabase.table("products").update({"is_review_crawled": True}).eq("product_url", url).execute()
+    except Exception as e:
+        logger.error(f"Supabase update status error: {e}")

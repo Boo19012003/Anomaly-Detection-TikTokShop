@@ -17,19 +17,24 @@ from app.database.crud import get_product_links_from_supabase
 logger = get_logger("TimeseriesPipeline")
 
 async def process_timeseries(browser, url, semaphore):
-    raw_data = await crawl_data_product(browser, url, semaphore)
-    
-    for idx, item in enumerate(raw_data):
-        if item.get("type") == "html":
-            try:
-                chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
-                raw_data.extend(chunks)
-            except Exception as e:
-                logger.error(f"HTML parse error: {e}")
-
-    structured_data = await extract_timeseries(raw_data)
+    logger.info(f"Start processing timeseries for URL: {url}")
+    try:
+        raw_data = await crawl_data_product(browser, url, semaphore)
         
-    await upsert_to_supabase(structured_data)
+        for idx, item in enumerate(raw_data):
+            if item.get("type") == "html":
+                try:
+                    chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
+                    raw_data.extend(chunks)
+                except Exception as e:
+                    logger.error(f"HTML parse error for {url}: {e}")
+
+        structured_data = await extract_timeseries(raw_data)
+            
+        await upsert_to_supabase(structured_data)
+        logger.info(f"Successfully processed timeseries for URL: {url}")
+    except Exception as e:
+        logger.error(f"Failed to process timeseries for URL: {url} - Error: {e}")
 
 
 async def run_pipeline():

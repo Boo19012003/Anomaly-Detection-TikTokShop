@@ -6,7 +6,9 @@ import time
 import random
 import os
 import logging
+os.environ["YOLO_VERBOSE"] = "False"
 from ultralytics import YOLO
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("CaptchaSolver")
