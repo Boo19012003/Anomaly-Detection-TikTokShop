@@ -16,7 +16,8 @@ from playwright.async_api import async_playwright
 logger = get_logger("ReviewPipeline")
 
 async def process_review(context, url, semaphore):
-    logger.info(f"Start processing reviews for URL: {url}")
+    task_logger = logger.bind(target_url=url)
+    task_logger.info("Start processing reviews")
     try:
         raw_data = await crawl_data_review(context, url, semaphore)
         
@@ -26,15 +27,15 @@ async def process_review(context, url, semaphore):
                     chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
                     raw_data.extend(chunks)
                 except Exception as e:
-                    logger.error(f"HTML parse error for {url}: {e}")
+                    task_logger.exception("HTML parse error")
 
         structured_data = await extract_review(raw_data)
                 
         await upsert_to_supabase(structured_data)
         await mark_product_as_crawled(url)
-        logger.info(f"Successfully processed reviews for URL: {url}")
+        task_logger.info("Successfully processed reviews")
     except Exception as e:
-        logger.error(f"Failed to process reviews for URL: {url} - Error: {e}")
+        task_logger.exception("Failed to process reviews")
 
 
 async def run_pipeline():

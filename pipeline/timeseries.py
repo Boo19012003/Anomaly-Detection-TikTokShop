@@ -17,7 +17,8 @@ from app.database.crud import get_product_links_from_supabase
 logger = get_logger("TimeseriesPipeline")
 
 async def process_timeseries(browser, url, semaphore):
-    logger.info(f"Start processing timeseries for URL: {url}")
+    task_logger = logger.bind(target_url=url)
+    task_logger.info("Start processing timeseries")
     try:
         raw_data = await crawl_data_product(browser, url, semaphore)
         
@@ -27,14 +28,14 @@ async def process_timeseries(browser, url, semaphore):
                     chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
                     raw_data.extend(chunks)
                 except Exception as e:
-                    logger.error(f"HTML parse error for {url}: {e}")
+                    task_logger.exception("HTML parse error")
 
         structured_data = await extract_timeseries(raw_data)
             
         await upsert_to_supabase(structured_data)
-        logger.info(f"Successfully processed timeseries for URL: {url}")
+        task_logger.info("Successfully processed timeseries")
     except Exception as e:
-        logger.error(f"Failed to process timeseries for URL: {url} - Error: {e}")
+        task_logger.exception("Failed to process timeseries")
 
 
 async def run_pipeline():
