@@ -1,5 +1,7 @@
 from app.database.connection import get_supabase_client
 from app.config.settings import get_logger
+from postgrest.exceptions import APIError
+import httpx
 
 logger = get_logger("CRUD")
 supabase = get_supabase_client()
@@ -7,6 +9,10 @@ supabase = get_supabase_client()
 async def upsert_to_supabase(structured_data):
     if not supabase:
         logger.warning("Supabase client not available, skipping upsert")
+        return
+
+    if not isinstance(structured_data, dict):
+        logger.error(f"Invalid structured_data format: Expected dict, got {type(structured_data)}")
         return
         
     try:
@@ -32,13 +38,19 @@ async def upsert_to_supabase(structured_data):
                     supabase.table("reviews").upsert(batch).execute()
                 inserted_any = True
 
-        if inserted_any:
-            logger.info("Upserted to Supabase successfully")
-        else:
+        if not inserted_any:
             logger.warning("No data found to upsert to Supabase")
         
+    except APIError as e:
+        logger.error(f"Supabase Database Error [APIError]: {e.message} - Code: {e.code} - Details: {e.details}")
+    except httpx.TimeoutException as e:
+        logger.error(f"Network Timeout Error interacting with Supabase: {e}")
+    except httpx.RequestError as e:
+        logger.error(f"Network Connection Error interacting with Supabase: {e}")
+    except AttributeError as e:
+        logger.error(f"Data Structure Error (AttributeError): {e}")
     except Exception as e:
-        logger.error(f"Supabase upsert error: {e}")
+        logger.error(f"Unexpected Error during Supabase upsert: {e}")
 
 async def get_product_links_from_supabase():
     if not supabase:
@@ -47,8 +59,18 @@ async def get_product_links_from_supabase():
     try:
         response = supabase.table("products").select("product_url").execute()
         return [row["product_url"] for row in response.data]
+
+    except APIError as e:
+        logger.error(f"Supabase Database Error [APIError]: {e.message}")
+        return []
+    except httpx.TimeoutException as e:
+        logger.error(f"Network Timeout Error interacting with Supabase: {e}")
+        return []
+    except httpx.RequestError as e:
+        logger.error(f"Network Connection Error interacting with Supabase: {e}")
+        return []
     except Exception as e:
-        logger.error(f"Supabase upsert error: {e}")
+        logger.error(f"Unexpected error in get_product_links_from_supabase: {e}")
         return []
 
 async def get_uncrawled_product_links_from_supabase(limit=10):
@@ -56,11 +78,20 @@ async def get_uncrawled_product_links_from_supabase(limit=10):
         logger.warning("Supabase client not available, skipping fetch")
         return []
     try:
-        # Lấy các sản phẩm có is_review_crawled là False hoặc Null
         response = supabase.table("products").select("product_url").or_("is_review_crawled.is.null,is_review_crawled.eq.false").limit(limit).execute()
         return [row["product_url"] for row in response.data]
+
+    except APIError as e:
+        logger.error(f"Supabase Database Error fetch uncrawled links: {e.message}")
+        return []
+    except httpx.TimeoutException as e:
+        logger.error(f"Network Timeout Error fetch uncrawled links: {e}")
+        return []
+    except httpx.RequestError as e:
+        logger.error(f"Network Connection Error fetch uncrawled links: {e}")
+        return []
     except Exception as e:
-        logger.error(f"Supabase fetch uncrawled links error: {e}")
+        logger.error(f"Unexpected error in get_uncrawled_product_links_from_supabase: {e}")
         return []
 
 async def mark_product_as_crawled(url: str):
@@ -68,5 +99,12 @@ async def mark_product_as_crawled(url: str):
         return
     try:
         supabase.table("products").update({"is_review_crawled": True}).eq("product_url", url).execute()
+
+    except APIError as e:
+        logger.error(f"Supabase update status error [APIError]: {e.message}")
+    except httpx.TimeoutException as e:
+        logger.error(f"Network Timeout Error update status: {e}")
+    except httpx.RequestError as e:
+        logger.error(f"Network Connection Error update status: {e}")
     except Exception as e:
-        logger.error(f"Supabase update status error: {e}")
+        logger.error(f"Unexpected error in mark_product_as_crawled: {e}")

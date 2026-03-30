@@ -6,6 +6,7 @@ import time
 import random
 import os
 import logging
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 os.environ["YOLO_VERBOSE"] = "False"
 from ultralytics import YOLO
 logging.getLogger("ultralytics").setLevel(logging.WARNING)
@@ -82,7 +83,7 @@ _model_path = os.path.join(current_dir, "weights", "solver_captcha_tiktokshop.pt
 
 try:
     yolo_model = YOLO(_model_path)
-except Exception as e:
+except (ImportError, RuntimeError, OSError) as e:
     logger.error(f"Loading YOLO model failed: {e}")
     yolo_model = None
 
@@ -138,7 +139,7 @@ async def solve_tiktok_captcha(page):
 
         try:
             await page.wait_for_selector("#captcha-verify-image", state="hidden", timeout=2000)
-        except:
+        except PlaywrightTimeoutError:
             pass
             
         if await page.locator("#captcha-verify-image").count() == 0:
@@ -146,6 +147,15 @@ async def solve_tiktok_captcha(page):
         else:
             return "failed"
 
+    except PlaywrightTimeoutError as e:
+        logger.error(f"Timeout solving captcha: {e}")
+        return "failed"
+    except PlaywrightError as e:
+        logger.error(f"Playwright error in captcha solving process: {e}")
+        return "failed"
+    except cv2.error as e:
+        logger.error(f"OpenCV error in captcha solving process: {e}")
+        return "failed"
     except Exception as e:
-        logger.error(f"Error in captcha solving process: {e}")
+        logger.error(f"Unexpected error in captcha solving process: {e}")
         return "failed"

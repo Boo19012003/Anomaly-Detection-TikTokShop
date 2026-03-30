@@ -6,6 +6,9 @@ requests
 python-dotenv
 supabase
 
+# System & Logging
+loguru
+
 # Computer Vision & Machine Learning
 opencv-python
 numpy

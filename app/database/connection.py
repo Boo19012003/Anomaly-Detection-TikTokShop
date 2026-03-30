@@ -8,6 +8,8 @@ def get_supabase_client() -> Client:
         try:
             client = create_client(SUPABASE_URL, SUPABASE_KEY)
             return client
+        except ValueError as e:
+            logger.error(f"Invalid Supabase credentials formatting: {e}")
         except Exception as e:
             logger.error(f"Supabase connection error: {e}")
     else:

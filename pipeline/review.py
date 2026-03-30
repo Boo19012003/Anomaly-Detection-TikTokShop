@@ -17,7 +17,6 @@ logger = get_logger("ReviewPipeline")
 
 async def process_review(context, url, semaphore):
     task_logger = logger.bind(target_url=url)
-    task_logger.info("Start processing reviews")
     try:
         raw_data = await crawl_data_review(context, url, semaphore)
         
@@ -26,8 +25,10 @@ async def process_review(context, url, semaphore):
                 try:
                     chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
                     raw_data.extend(chunks)
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    task_logger.error(f"HTML parse data formatting error: {e}")
                 except Exception as e:
-                    task_logger.exception("HTML parse error")
+                    task_logger.exception(f"Unexpected HTML parse error: {e}")
 
         structured_data = await extract_review(raw_data)
                 
@@ -60,11 +61,17 @@ async def run_pipeline():
                 for product_link in product_links
             ]
             
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            success_count = sum(1 for r in results if r is True)
+            fail_count = len(results) - success_count
         
         await context.close()
         await browser.close()
-        logger.info("Pipeline finished successfully")
+
+        logger.info(
+            f"Pipeline finished. Processed: {len(results)} products | "
+            f"Success: {success_count} | Failed: {fail_count}"
+        )
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())

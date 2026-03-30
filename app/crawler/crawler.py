@@ -1,6 +1,7 @@
 import asyncio
 import re
 import json
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 from app.crawler.browser import check_captcha_visible, solve_captcha_async, intercept_route
 from app.config.settings import get_logger
 
@@ -23,17 +24,31 @@ async def crawl_data_product(context, url, semaphore):
                     if match:
                         loader_data = json.loads(match.group(1))
                         temp_raw_data.append({"url": resp_url, "type": "html_loader_data", "data": loader_data})
+            except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
+                logger.error(f"Data mapping error in URL {resp_url}: {e}")
             except Exception as e:
-                logger.error(f"Response error: {e}")
+                logger.error(f"Unexpected response error for {resp_url}: {e}")
 
         page.on("response", handle_response)
+
         try:
             await page.goto(url, timeout=20000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
-            except: pass
+            except PlaywrightTimeoutError: 
+                pass
+
             if await check_captcha_visible(page):
                 await solve_captcha_async(page)
+
+            if not temp_raw_data:
+                await page.reload(timeout=20000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
+
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout loading product URL {url}: {e}")
+        except PlaywrightError as e:
+            logger.error(f"Playwright error loading product URL {url}: {e}")
         except Exception as e:
             logger.error(f"Error loading {url}: {e}")
         finally:
@@ -66,8 +81,14 @@ async def select_star_filter(page, star_value: str):
         
         await page.wait_for_timeout(1000)
 
+    except PlaywrightTimeoutError as e:
+        logger.error(f"Timeout selecting star filter {star_value}: {e}")
+        raise e
+    except PlaywrightError as e:
+        logger.error(f"Playwright error selecting star filter {star_value}: {e}")
+        raise e
     except Exception as e:
-        logger.error(f"Error selecting star filter {star_value}: {e}")
+        logger.error(f"Unexpected error selecting star filter {star_value}: {e}")
         raise e
 
 # Crawl data review
@@ -95,8 +116,10 @@ async def crawl_data_review(context, url, semaphore):
                         if valid_reviews:
                             json_data["data"]["product_reviews"] = valid_reviews
                             temp_raw_data.append({"url": resp_url, "type": "json", "data": json_data})
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                logger.error(f"Data formatting error parsing review response: {e}")
             except Exception as e:
-                pass
+                logger.error(f"Unexpected response error for review {resp_url}: {e}")
 
         page.on("response", handle_response)
 
@@ -104,7 +127,8 @@ async def crawl_data_review(context, url, semaphore):
             await page.goto(url, timeout=20000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
-            except: pass
+            except PlaywrightTimeoutError: 
+                pass
                 
             if await check_captcha_visible(page):
                 await solve_captcha_async(page)
@@ -124,13 +148,18 @@ async def crawl_data_review(context, url, semaphore):
 
                 await page.wait_for_timeout(500)
 
-            except Exception as e:
+            except PlaywrightTimeoutError as e:
+                logger.warning(f"Timeout setting initial review sort: {e}")
                 try:
                     if await check_captcha_visible(page):
                         await solve_captcha_async(page)
                         await page.wait_for_timeout(2000)
-                except Exception as e:
-                    logger.error(f"Error sorting reviews: {e}")
+                except PlaywrightError as solve_e:
+                    logger.error(f"Playwright error checking captcha in sort fallback: {solve_e}")
+            except PlaywrightError as e:
+                logger.error(f"Playwright error setting initial review sort: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error sorting reviews: {e}")
 
             for s in ["5", "4", "3", "2", "1"]:
                 try:
@@ -155,8 +184,12 @@ async def crawl_data_review(context, url, semaphore):
                                     valid_reviews_count += 1
                             filter_success = True
                             break
+                        except PlaywrightTimeoutError as e:
+                            logger.warning(f"Timeout selecting star filter {s} on attempt {attempt}: {e}")
+                        except PlaywrightError as e:
+                            logger.error(f"Playwright error selecting star filter {s}: {e}")
                         except Exception as e:
-                            logger.error(f"Error selecting star filter {s}: {e}")
+                            logger.error(f"Unexpected error selecting star filter {s}: {e}")
                     if not filter_success:
                         logger.warning(f"Skip next page for star {s} because filter cannot be activated.")
                         continue
@@ -185,30 +218,45 @@ async def crawl_data_review(context, url, semaphore):
                                     text = rev.get("review_text") or ""
                                     if len(text.split()) > 2:
                                         valid_reviews_count += 1
+                            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                                logger.error(f"Data formatting error parsing reviews response: {e}")
                             except Exception as e:
-                                logger.error(f"Error parsing reviews response: {e}")
+                                logger.error(f"Unexpected error parsing reviews response: {e}")
                                 
-                        except Exception as e:
+                        except PlaywrightTimeoutError as e:
+                            logger.warning(f"Timeout clicking next page for reviews: {e}")
                             if await check_captcha_visible(page):
                                 await solve_captcha_async(page)
                                 await page.wait_for_timeout(2000)
                                 continue
-                            
-                            if "Timeout" in str(e): 
-                                break
-                            
+                            break
+                        except PlaywrightError as e:
+                            logger.warning(f"Playwright error clicking next page: {e}")
+                            if await check_captcha_visible(page):
+                                await solve_captcha_async(page)
+                                await page.wait_for_timeout(2000)
+                                continue
                             try:
                                 await next_button.scroll_into_view_if_needed()
                                 await next_button.click(timeout=2000, force=True)
                                 await page.wait_for_timeout(1000)
-                            except: 
+                            except (PlaywrightTimeoutError, PlaywrightError): 
                                 break
+                        except Exception as e:
+                            logger.error(f"Unexpected error when attempting to click Next: {e}")
+                            break
 
+                except PlaywrightError as e:
+                    logger.error(f"Playwright error processing star {s}: {e}")
                 except Exception as e:
-                    logger.error(f"Error processing star {s}: {e}")
+                    logger.error(f"Unexpected error processing star {s}: {e}")
 
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout loading review URL {url}: {e}")
+        except PlaywrightError as e:
+            logger.error(f"Playwright error loading review URL {url}: {e}")
         except Exception as e:
-            logger.error(f"Error loading review URL {url}: {e}")
+            logger.error(f"Unexpected error loading review URL {url}: {e}")
         finally:
             await page.close()
             

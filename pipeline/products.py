@@ -3,7 +3,7 @@ import sys
 import os
 import re
 import json
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -26,14 +26,19 @@ async def process_product_url(context, href, semaphore):
                 try:
                     chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
                     raw_data.extend(chunks)
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    task_logger.error(f"HTML parse data formatting error: {e}")
                 except Exception as e:
-                    task_logger.exception("HTML parse error")
+                    task_logger.exception(f"Unexpected HTML parse error: {e}")
 
         structured_data = await extract_product(raw_data)
         await upsert_to_supabase(structured_data)
-        task_logger.info("Successfully processed product URL")
+        task_logger.debug("Successfully processed product URL")
+        return True
+
     except Exception as e:
         task_logger.exception("Failed to process product URL")
+        return False
 
 async def collect_url_product(context, name, url, semaphore):
     async with semaphore:
@@ -44,7 +49,7 @@ async def collect_url_product(context, name, url, semaphore):
             await page.goto(url, timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
-            except:
+            except PlaywrightTimeoutError:
                 pass
 
             if await check_captcha_visible(page):
@@ -58,7 +63,7 @@ async def collect_url_product(context, name, url, semaphore):
                     try:
                         await solve_captcha_async(page)
                         await page.wait_for_timeout(500)
-                    except:
+                    except PlaywrightError:
                         pass
 
                 if await no_more_products.is_visible():
@@ -75,7 +80,7 @@ async def collect_url_product(context, name, url, semaphore):
                     await view_more_btn.click(timeout=2000) 
                     await page.wait_for_timeout(500)
 
-                except Exception:
+                except (PlaywrightTimeoutError, PlaywrightError):
                     if await check_captcha_visible(page):
                         continue
                     else:
@@ -90,11 +95,15 @@ async def collect_url_product(context, name, url, semaphore):
             for link in links:
                 product_links.add(link)
                 
-            logger.info(f"Lấy được {len(product_links)} link sản phẩm từ danh mục {name}")
+            logger.info(f"Found {len(product_links)} product links in category {name}")
             return list(product_links)
 
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout analyzing {name}: {e}")
+        except PlaywrightError as e:
+            logger.error(f"Playwright error analyzing {name}: {e}")
         except Exception as e:
-            logger.error(f"{name} error: {e}")
+            logger.error(f"Unexpected error in {name}: {e}")
         finally:
             await page.close()
 
@@ -106,7 +115,7 @@ async def collect_category_links(browser, context_args):
     
     try:
         await home_page.wait_for_load_state("networkidle", timeout=5000)
-    except Exception:
+    except PlaywrightTimeoutError:
         pass
 
     if await check_captcha_visible(home_page):
@@ -114,8 +123,10 @@ async def collect_category_links(browser, context_args):
 
     try:
         await home_page.wait_for_selector('a[href*="/c/"]', timeout=10000)
-    except Exception:
-        logger.warning("Not found category links")
+    except PlaywrightTimeoutError:
+        logger.warning("Timeout waiting to find category links")
+    except Exception as e:
+        logger.warning(f"Unexpected error finding category links: {e}")
 
     target_categories = [
         "Womenswear & Underwear", 
@@ -183,11 +194,16 @@ async def run_pipeline():
             asyncio.create_task(process_product_url(context_3, href, product_semaphore)) 
             for href in product_links
         ]
-        await asyncio.gather(*tasks_3)
-        
+        results = await asyncio.gather(*tasks_3)
+        success_count = sum(1 for r in results if r is True)
+        fail_count = len(results) - success_count
+
         await browser_3.close()
         
-        logger.info("Pipeline finished successfully")
+        logger.info(
+            f"Pipeline finished. Processed: {len(results)} products | "
+            f"Success: {success_count} | Failed: {fail_count}"
+        )
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())

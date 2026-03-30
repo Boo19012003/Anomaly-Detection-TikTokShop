@@ -1,7 +1,7 @@
 import os
 import random
 import asyncio
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 from app.ml_models.captcha_solver import solve_tiktok_captcha
 from app.config.settings import USER_AGENTS, get_logger
 
@@ -36,8 +36,14 @@ async def solve_captcha_async(page):
     while captcha_count < max_retries:
         try:
             status = await solve_tiktok_captcha(page)
+        except PlaywrightTimeoutError as e:
+            logger.warning(f"Captcha module timeout: {e}")
+            break
+        except PlaywrightError as e:
+            logger.warning(f"Captcha module Playwright error: {e}")
+            break
         except Exception as e:
-            logger.warning(f"Captcha module error: {e}")
+            logger.warning(f"Captcha module unexpected error: {e}")
             break
 
         if status == "no_captcha":
@@ -57,7 +63,7 @@ async def init_browser_context(playwright):
         '--no-sandbox'
     ]
     browser = await playwright.chromium.launch(
-        headless=False,
+        headless=True,
         channel="chrome",
         args=args
     )
