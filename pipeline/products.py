@@ -7,16 +7,16 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.config.settings import get_logger
-from app.crawler.browser import check_captcha_visible, solve_captcha_async, init_browser_context, intercept_route
+from app.config.settings import get_logger, MAX_CONCURRENT_PAGES
+from app.crawler.browser import handle_captcha, init_browser_context, intercept_route
 from app.crawler.crawler import crawl_data_product
 from app.parser.product_parser import extract_product
 from app.parser.nlp_utils import extract_json_from_html
-from app.database.crud import upsert_to_supabase
+from app.database.upsert_queue import UpsertQueue
 
 logger = get_logger("ProductPipeline")
 
-async def process_product_url(context, href, semaphore):
+async def process_product_url(context, href, semaphore, queue):
     task_logger = logger.bind(target_url=href)
     try:
         raw_data = await crawl_data_product(context, href, semaphore)
@@ -26,14 +26,19 @@ async def process_product_url(context, href, semaphore):
                 try:
                     chunks = await asyncio.to_thread(extract_json_from_html, item.get("data", ""), item.get("url", ""))
                     raw_data.extend(chunks)
+                    del chunks
                 except (json.JSONDecodeError, ValueError, TypeError) as e:
                     task_logger.error(f"HTML parse data formatting error: {e}")
                 except Exception as e:
                     task_logger.exception(f"Unexpected HTML parse error: {e}")
 
         structured_data = await extract_product(raw_data)
-        await upsert_to_supabase(structured_data)
-        task_logger.debug("Successfully processed product URL")
+        raw_data.clear()
+        del raw_data
+
+        await queue.add(structured_data)
+        del structured_data
+        task_logger.debug("Successfully queued product data")
         return True
 
     except Exception as e:
@@ -48,52 +53,56 @@ async def collect_url_product(context, name, url, semaphore):
         try:
             await page.goto(url, timeout=30000)
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
             except PlaywrightTimeoutError:
                 pass
 
-            if await check_captcha_visible(page):
-                await solve_captcha_async(page)
-                await page.wait_for_timeout(500)
+            await handle_captcha(page, wait_ms=500)
+
             
             view_more_btn = page.locator('div.flex.justify-center.mt-16:has-text("View more")')
             no_more_products = page.locator('div.flex.justify-center.mt-16:has-text("No more products")')
+
+            product_locator = page.locator('a[href*="/pdp/"]')
+
             while True:
-                if await check_captcha_visible(page):
-                    try:
-                        await solve_captcha_async(page)
-                        await page.wait_for_timeout(500)
-                    except PlaywrightError:
-                        pass
+                await handle_captcha(page, wait_ms=500)
+                
+                current_links = await product_locator.evaluate_all("elements => elements.map(el => el.href)")
+                product_links.update(current_links)
+
+                current_product_count = len(current_links)
 
                 if await no_more_products.is_visible():
+                    logger.debug(f"[{name}] No more products")
                     break
 
-                if not await view_more_btn.is_visible():
-                    await page.wait_for_timeout(500)
-                    if await check_captcha_visible(page):
-                        continue
-                    elif not await view_more_btn.is_visible():
-                        break
+                if await view_more_btn.is_visible():
+                    try:
+                        await view_more_btn.click(timeout=3000)
+                        
+                        try:
+                            await page.wait_for_function(
+                                f"document.querySelectorAll('a[href*=\"/pdp/\"]').length > {current_product_count}",
+                                timeout=5000
+                            )
+                        except PlaywrightTimeoutError:
+                            logger.debug(f"[{name}] Unable to load new products, checking captcha.")
+                            if not await handle_captcha(page, wait_ms=500):
+                                pass
+                    
+                    except (PlaywrightTimeoutError, PlaywrightError) as e:
+                        logger.debug(f"[{name}] Error click view more: {e}")
+                        if not await handle_captcha(page, wait_ms=500):
 
-                try:
-                    await view_more_btn.click(timeout=2000) 
-                    await page.wait_for_timeout(500)
+                            await page.wait_for_timeout(1000)
 
-                except (PlaywrightTimeoutError, PlaywrightError):
-                    if await check_captcha_visible(page):
-                        continue
-                    else:
-                        break
-            
-            await page.wait_for_selector('a[href*="/pdp/"]', timeout=10000)
-            
-            links = await page.locator('a[href*="/pdp/"]').evaluate_all(
-                "elements => elements.map(el => el.href)"
-            )
-            
-            for link in links:
-                product_links.add(link)
+                else:
+                    await page.wait_for_timeout(1000)
+                    if not await handle_captcha(page, wait_ms=500):
+                         if not await view_more_btn.is_visible() and not await no_more_products.is_visible():
+                             logger.warning(f"[{name}] No next state found. Exit loop.")
+                             break
                 
             logger.info(f"Found {len(product_links)} product links in category {name}")
             return list(product_links)
@@ -107,7 +116,7 @@ async def collect_url_product(context, name, url, semaphore):
         finally:
             await page.close()
 
-async def collect_category_links(browser, context_args):
+async def collect_category_links(context_args, browser):
     context = await browser.new_context(**context_args)
     await context.route("**/*", intercept_route)
     home_page = await context.new_page()
@@ -118,8 +127,7 @@ async def collect_category_links(browser, context_args):
     except PlaywrightTimeoutError:
         pass
 
-    if await check_captcha_visible(home_page):
-        await solve_captcha_async(home_page)
+    await handle_captcha(home_page)
 
     try:
         await home_page.wait_for_selector('a[href*="/c/"]', timeout=10000)
@@ -155,55 +163,66 @@ async def run_pipeline():
     async with async_playwright() as p:
         logger.info("Pipeline started")
         
-        browser_1, _, context_args_1 = await init_browser_context(p)
-        cat_links = await collect_category_links(browser_1, context_args_1)
-        await browser_1.close()
+        browser, _, context_args = await init_browser_context(p)
 
-        if not cat_links:
-            logger.error("No category links found.")
-            return
+        try:
+            # --- Phase 1: Collect category links ---
+            cat_links = await collect_category_links(context_args, browser)
 
-        browser_2, context_2, _ = await init_browser_context(p)
-        await context_2.route("**/*", intercept_route)
-        
-        MAX_CAT_TABS = 3
-        cat_semaphore = asyncio.Semaphore(MAX_CAT_TABS) 
-        
-        tasks_2 = [
-            asyncio.create_task(collect_url_product(context_2, cat["name"], cat["url"], cat_semaphore)) 
-            for cat in cat_links
-        ]
-        
-        nested_product_links = await asyncio.gather(*tasks_2)
-        product_links = [url for sublist in nested_product_links if sublist for url in sublist]
-        
-        await browser_2.close()
-        logger.info(f"{len(product_links)} product links collected.")
+            if not cat_links:
+                logger.error("No category links found.")
+                return
 
-        if not product_links:
-            logger.error("No product links found.")
-            return
+            # --- Phase 2: Collect product URLs from categories ---
+            context_2 = await browser.new_context(**context_args)
+            await context_2.route("**/*", intercept_route)
+            
+            cat_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES) 
+            
+            tasks_2 = [
+                asyncio.create_task(collect_url_product(context_2, cat["name"], cat["url"], cat_semaphore)) 
+                for cat in cat_links
+            ]
+            
+            nested_product_links = await asyncio.gather(*tasks_2)
+            del tasks_2, cat_links
 
-        browser_3, context_3, _ = await init_browser_context(p)
-        await context_3.route("**/*", intercept_route)
+            product_links = [url for sublist in nested_product_links if sublist for url in sublist]
+            del nested_product_links
+            
+            await context_2.close()
+            logger.info(f"{len(product_links)} product links collected.")
 
-        MAX_PRODUCT_TABS = 3
-        product_semaphore = asyncio.Semaphore(MAX_PRODUCT_TABS)
-        
-        tasks_3 = [
-            asyncio.create_task(process_product_url(context_3, href, product_semaphore)) 
-            for href in product_links
-        ]
-        results = await asyncio.gather(*tasks_3)
-        success_count = sum(1 for r in results if r is True)
-        fail_count = len(results) - success_count
+            if not product_links:
+                logger.error("No product links found.")
+                return
 
-        await browser_3.close()
-        
-        logger.info(
-            f"Pipeline finished. Processed: {len(results)} products | "
-            f"Success: {success_count} | Failed: {fail_count}"
-        )
+            # --- Phase 3: Process each product URL ---
+            context_3 = await browser.new_context(**context_args)
+            await context_3.route("**/*", intercept_route)
+
+            product_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
+            
+            async with UpsertQueue() as queue:
+                tasks_3 = [
+                    asyncio.create_task(process_product_url(context_3, href, product_semaphore, queue)) 
+                    for href in product_links
+                ]
+                del product_links
+                results = await asyncio.gather(*tasks_3)
+                del tasks_3
+            
+            success_count = sum(1 for r in results if not isinstance(r, Exception))
+            fail_count = len(results) - success_count
+
+            await context_3.close()
+            
+            logger.info(
+                f"Pipeline finished. Processed: {len(results)} products | "
+                f"Success: {success_count} | Failed: {fail_count}"
+            )
+        finally:
+            await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
