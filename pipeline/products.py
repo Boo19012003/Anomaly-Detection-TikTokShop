@@ -187,7 +187,7 @@ async def run_pipeline():
             nested_product_links = await asyncio.gather(*tasks_2)
             del tasks_2, cat_links
 
-            product_links = [url for sublist in nested_product_links if sublist for url in sublist]
+            product_links = list(set([url for sublist in nested_product_links if sublist for url in sublist]))
             del nested_product_links
             
             await context_2.close()
