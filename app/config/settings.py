@@ -86,6 +86,9 @@ USER_AGENTS = [
 ]
 
 TIMEOUT = 30000
+MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "3"))
+UPSERT_BATCH_SIZE = int(os.getenv("UPSERT_BATCH_SIZE", "50"))
+UPSERT_FLUSH_INTERVAL = int(os.getenv("UPSERT_FLUSH_INTERVAL", "10"))
 
 # Database settings
 SUPABASE_URL = os.getenv("SUPABASE_URL")

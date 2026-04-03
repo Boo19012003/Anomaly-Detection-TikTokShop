@@ -2,94 +2,48 @@ import asyncio
 import re
 import json
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
-from app.crawler.browser import check_captcha_visible, solve_captcha_async, intercept_route
+from app.crawler.browser import handle_captcha
 from app.config.settings import get_logger
 
 logger = get_logger("Crawler")
 
-# Crawl data product
 async def crawl_data_product(context, url, semaphore):
     async with semaphore:
         page = await context.new_page()
-        
         temp_raw_data = []
-
-        async def handle_response(response):
-            if response.request.method == "OPTIONS" or response.status != 200: return
-            resp_url = response.url
-            try:
-                if "/shop/vn/" in resp_url:
-                    html_text = await response.text()
-                    match = re.search(r'<script[^>]*id="__MODERN_ROUTER_DATA__"[^>]*>(.*?)</script>', html_text, flags=re.IGNORECASE | re.DOTALL)
-                    if match:
-                        loader_data = json.loads(match.group(1))
-                        temp_raw_data.append({"url": resp_url, "type": "html_loader_data", "data": loader_data})
-            except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
-                logger.error(f"Data mapping error in URL {resp_url}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected response error for {resp_url}: {e}")
-
-        page.on("response", handle_response)
 
         try:
             await page.goto(url, timeout=20000)
+            script_locator = page.locator('#__MODERN_ROUTER_DATA__')
+            
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except PlaywrightTimeoutError: 
-                pass
+                await script_locator.wait_for(state="attached", timeout=5000)
+                
+            except PlaywrightTimeoutError:
+                await handle_captcha(page)
+                
+                try:
+                    await page.reload(timeout=15000)
+                    await script_locator.wait_for(state="attached", timeout=10000)
+                except PlaywrightTimeoutError:
+                    logger.warning(f"Vẫn không tìm thấy thẻ data cho URL {url} sau khi đã giải captcha và reload")
+                    return temp_raw_data
 
-            if await check_captcha_visible(page):
-                await solve_captcha_async(page)
+            json_text = await script_locator.inner_text()
+            if json_text:
+                loader_data = json.loads(json_text)
+                temp_raw_data.append({
+                    "url": page.url, 
+                    "type": "html_loader_data", 
+                    "data": loader_data
+                })
 
-            if not temp_raw_data:
-                await page.reload(timeout=20000)
-                await page.wait_for_load_state("networkidle", timeout=10000)
-
-        except PlaywrightTimeoutError as e:
-            logger.error(f"Timeout loading product URL {url}: {e}")
-        except PlaywrightError as e:
-            logger.error(f"Playwright error loading product URL {url}: {e}")
         except Exception as e:
-            logger.error(f"Error loading {url}: {e}")
+            logger.error(f"Lỗi không xác định khi xử lý {url}: {e}")
         finally:
             await page.close()
-        
+            
     return temp_raw_data
-
-
-
-# Select star filter
-async def select_star_filter(page, star_value: str):
-    try:
-        filter_container = page.locator('.review-filter-star-select-container-MaTvEI')
-        dropdown_btn = filter_container.locator('[data-testid="tux-web-select"]').first
-        
-        await dropdown_btn.wait_for(state="visible", timeout=5000)
-        await dropdown_btn.click(timeout=3000, force=True)
-        
-        await page.wait_for_timeout(800)
-        
-        option_to_click = page.locator('.tux-menu-item .Headline-Semibold').filter(has_text=re.compile(f"^{star_value}")).first
-        
-        # Nếu chưa thấy menu mở ra, thử click mở lại lần nữa
-        if not await option_to_click.is_visible():
-            await dropdown_btn.click(timeout=2000, force=True)
-            await page.wait_for_timeout(800)
-
-        await option_to_click.wait_for(state="visible", timeout=3000)
-        await option_to_click.click(timeout=2000, force=True)
-        
-        await page.wait_for_timeout(1000)
-
-    except PlaywrightTimeoutError as e:
-        logger.error(f"Timeout selecting star filter {star_value}: {e}")
-        raise e
-    except PlaywrightError as e:
-        logger.error(f"Playwright error selecting star filter {star_value}: {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"Unexpected error selecting star filter {star_value}: {e}")
-        raise e
 
 # Crawl data review
 async def crawl_data_review(context, url, semaphore):
@@ -110,7 +64,7 @@ async def crawl_data_review(context, url, semaphore):
                         valid_reviews = []
                         for rev in reviews_list:
                             text = rev.get("review_text") or ""
-                            if len(text.split()) > 2:
+                            if len(text.split()) >= 3:
                                 valid_reviews.append(rev)
                         
                         if valid_reviews:
@@ -126,130 +80,100 @@ async def crawl_data_review(context, url, semaphore):
         try:
             await page.goto(url, timeout=20000)
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_response("**/get_product_review*", timeout=5000)
             except PlaywrightTimeoutError: 
                 pass
                 
-            if await check_captcha_visible(page):
-                await solve_captcha_async(page)
+            await handle_captcha(page)
 
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(300)
             
             try:
+                review_section = page.locator('#pdp-review-section').first
+                if await review_section.is_visible():
+                    await review_section.scroll_into_view_if_needed(timeout=3000)
+
                 dropdown_btn = page.locator('[data-testid="tux-web-select"]').filter(has_text="Recommended").first
-                await dropdown_btn.click(timeout=5000, force=True)
+                if not await dropdown_btn.is_visible():
+                    dropdown_btn = page.locator('div').filter(has_text=re.compile(r"^Sort by$")).locator('..').locator('[data-testid="tux-web-select"]').first
+                
+                await dropdown_btn.scroll_into_view_if_needed(timeout=3000)
+                await dropdown_btn.click(timeout=3000, force=True)
 
                 await page.wait_for_timeout(500)
 
-                option_to_click = page.locator('.tux-menu-item').filter(has_text=re.compile(r"Most recent")).first
+                option_to_click = page.locator('.tux-menu-item').filter(has_text=re.compile(r"Most recent", re.IGNORECASE)).first
 
-                await option_to_click.wait_for(state="visible", timeout=5000)
-                await option_to_click.click(timeout=5000, force=True)
+                if not await option_to_click.is_visible():
+                    await dropdown_btn.click(timeout=2000, force=True)
+                    await page.wait_for_timeout(500)
+
+                await option_to_click.wait_for(state="visible", timeout=3000)
+                await option_to_click.click(timeout=3000, force=True)
 
                 await page.wait_for_timeout(500)
 
             except PlaywrightTimeoutError as e:
                 logger.warning(f"Timeout setting initial review sort: {e}")
-                try:
-                    if await check_captcha_visible(page):
-                        await solve_captcha_async(page)
-                        await page.wait_for_timeout(2000)
-                except PlaywrightError as solve_e:
-                    logger.error(f"Playwright error checking captcha in sort fallback: {solve_e}")
+                await handle_captcha(page, wait_ms=1000)
             except PlaywrightError as e:
                 logger.error(f"Playwright error setting initial review sort: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error sorting reviews: {e}")
 
-            for s in ["5", "4", "3", "2", "1"]:
+            next_button = page.locator('div.flex.items-center:has(div.Headline-Semibold:text-is("Next"))')
+            valid_reviews_count = 0
+            
+            async def is_next_disabled():
+                if not await next_button.is_visible():
+                    return True
+                cls = await next_button.get_attribute('class') or ""
+                return 'text-color-UITextPlaceholder' in cls
+            
+            while valid_reviews_count < 100:
+                if await is_next_disabled():
+                    logger.info(f"No more pages, collected {valid_reviews_count} valid reviews.")
+                    break
+                
+                await handle_captcha(page, wait_ms=1000)
+                
+                if await is_next_disabled():
+                    logger.info(f"No more pages, collected {valid_reviews_count} valid reviews.")
+                    break
+                    
                 try:
-                    valid_reviews_count = 0
-                    filter_success = False
-
-                    for attempt in range(3):
-                        if await check_captcha_visible(page):
-                            await solve_captcha_async(page)
-                            await page.wait_for_timeout(2000)
+                    async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=5000) as response_info:
+                        await next_button.click(timeout=2000)
+                    
+                    response = await response_info.value
+                    try:
+                        json_data = await response.json()
+                        reviews_list = json_data.get("data", {}).get("product_reviews", [])
+                        for rev in reviews_list:
+                            text = rev.get("review_text") or ""
+                            if len(text.split()) >= 3:
+                                valid_reviews_count += 1
+                    except (json.JSONDecodeError, TypeError, KeyError) as e:
+                        logger.error(f"Data formatting error parsing reviews response: {e}")
+                    except Exception as e:
+                        logger.error(f"Unexpected error parsing reviews response: {e}")
                         
-                        try:
-                            async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=5000) as first_res_info:
-                                await select_star_filter(page, s)
-                            
-                            first_res = await first_res_info.value
-                            json_data = await first_res.json()
-                            reviews_list = json_data.get("data", {}).get("product_reviews", [])
-                            for rev in reviews_list:
-                                text = rev.get("review_text") or ""
-                                if len(text.split()) > 2:
-                                    valid_reviews_count += 1
-                            filter_success = True
-                            break
-                        except PlaywrightTimeoutError as e:
-                            logger.warning(f"Timeout selecting star filter {s} on attempt {attempt}: {e}")
-                        except PlaywrightError as e:
-                            logger.error(f"Playwright error selecting star filter {s}: {e}")
-                        except Exception as e:
-                            logger.error(f"Unexpected error selecting star filter {s}: {e}")
-                    if not filter_success:
-                        logger.warning(f"Skip next page for star {s} because filter cannot be activated.")
+                except PlaywrightTimeoutError:
+                    if await is_next_disabled():
+                        logger.info(f"Reached last page, collected {valid_reviews_count} valid reviews.")
+                        break
+                    if await handle_captcha(page, wait_ms=1000):
                         continue
-
-                    next_button = page.locator('div.flex.items-center:has(div.Headline-Semibold:text-is("Next"))')
-                    while valid_reviews_count < 30:
-                        if not await next_button.is_visible():
-                            break
-                        class_attribute = await next_button.get_attribute('class')
-                        if class_attribute and 'text-color-UITextPlaceholder' in class_attribute:
-                            break
-                        
-                        if await check_captcha_visible(page):
-                            await solve_captcha_async(page)
-                            await page.wait_for_timeout(2000)
-                            
-                        try:
-                            async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=10000) as response_info:
-                                await next_button.click(timeout=2000)
-                            
-                            response = await response_info.value
-                            try:
-                                json_data = await response.json()
-                                reviews_list = json_data.get("data", {}).get("product_reviews", [])
-                                for rev in reviews_list:
-                                    text = rev.get("review_text") or ""
-                                    if len(text.split()) > 2:
-                                        valid_reviews_count += 1
-                            except (json.JSONDecodeError, TypeError, KeyError) as e:
-                                logger.error(f"Data formatting error parsing reviews response: {e}")
-                            except Exception as e:
-                                logger.error(f"Unexpected error parsing reviews response: {e}")
-                                
-                        except PlaywrightTimeoutError as e:
-                            logger.warning(f"Timeout clicking next page for reviews: {e}")
-                            if await check_captcha_visible(page):
-                                await solve_captcha_async(page)
-                                await page.wait_for_timeout(2000)
-                                continue
-                            break
-                        except PlaywrightError as e:
-                            logger.warning(f"Playwright error clicking next page: {e}")
-                            if await check_captcha_visible(page):
-                                await solve_captcha_async(page)
-                                await page.wait_for_timeout(2000)
-                                continue
-                            try:
-                                await next_button.scroll_into_view_if_needed()
-                                await next_button.click(timeout=2000, force=True)
-                                await page.wait_for_timeout(1000)
-                            except (PlaywrightTimeoutError, PlaywrightError): 
-                                break
-                        except Exception as e:
-                            logger.error(f"Unexpected error when attempting to click Next: {e}")
-                            break
-
+                    logger.warning("Timeout clicking next page, skipping.")
+                    break
                 except PlaywrightError as e:
-                    logger.error(f"Playwright error processing star {s}: {e}")
+                    logger.warning(f"Playwright error clicking next page: {e}")
+                    if await handle_captcha(page, wait_ms=1000):
+                        continue
+                    break
                 except Exception as e:
-                    logger.error(f"Unexpected error processing star {s}: {e}")
+                    logger.error(f"Unexpected error when attempting to click Next: {e}")
+                    break
 
         except PlaywrightTimeoutError as e:
             logger.error(f"Timeout loading review URL {url}: {e}")
@@ -261,5 +185,3 @@ async def crawl_data_review(context, url, semaphore):
             await page.close()
             
         return temp_raw_data
-
-        

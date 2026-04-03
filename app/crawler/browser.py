@@ -56,6 +56,17 @@ async def solve_captcha_async(page):
             logger.warning(f"Retry {captcha_count}/{max_retries}")
             await asyncio.sleep(1)
 
+async def handle_captcha(page, wait_ms=0):
+    if await check_captcha_visible(page):
+        try:
+            await solve_captcha_async(page)
+            if wait_ms > 0:
+                await page.wait_for_timeout(wait_ms)
+        except PlaywrightError:
+            pass
+        return True
+    return False
+
 async def init_browser_context(playwright):
     args = [
         '--disable-blink-features=AutomationControlled',
@@ -63,7 +74,7 @@ async def init_browser_context(playwright):
         '--no-sandbox'
     ]
     browser = await playwright.chromium.launch(
-        headless=True,
+        headless=False,
         channel="chrome",
         args=args
     )
@@ -72,7 +83,7 @@ async def init_browser_context(playwright):
     
     context_args = {
         "viewport": {"width": 1280, "height": 720},
-        "user_agent": random.choice(USER_AGENTS)
+        "user_agent": random.choice(USER_AGENTS),
     }
     
     if os.path.exists(state_path):

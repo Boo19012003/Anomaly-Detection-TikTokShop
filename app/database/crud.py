@@ -2,6 +2,7 @@ from app.database.connection import get_supabase_client
 from app.config.settings import get_logger
 from postgrest.exceptions import APIError
 import httpx
+import asyncio
 
 logger = get_logger("CRUD")
 supabase = get_supabase_client()
@@ -9,11 +10,11 @@ supabase = get_supabase_client()
 async def upsert_to_supabase(structured_data):
     if not supabase:
         logger.warning("Supabase client not available, skipping upsert")
-        return
+        return False
 
     if not isinstance(structured_data, dict):
         logger.error(f"Invalid structured_data format: Expected dict, got {type(structured_data)}")
-        return
+        return False
         
     try:
         inserted_any = False
@@ -40,17 +41,25 @@ async def upsert_to_supabase(structured_data):
 
         if not inserted_any:
             logger.warning("No data found to upsert to Supabase")
+            return False
+            
+        return True
         
     except APIError as e:
         logger.error(f"Supabase Database Error [APIError]: {e.message} - Code: {e.code} - Details: {e.details}")
+        return False
     except httpx.TimeoutException as e:
         logger.error(f"Network Timeout Error interacting with Supabase: {e}")
+        return False
     except httpx.RequestError as e:
         logger.error(f"Network Connection Error interacting with Supabase: {e}")
+        return False
     except AttributeError as e:
         logger.error(f"Data Structure Error (AttributeError): {e}")
+        return False
     except Exception as e:
         logger.error(f"Unexpected Error during Supabase upsert: {e}")
+        return False
 
 async def get_product_links_from_supabase():
     if not supabase:
@@ -73,12 +82,18 @@ async def get_product_links_from_supabase():
         logger.error(f"Unexpected error in get_product_links_from_supabase: {e}")
         return []
 
-async def get_uncrawled_product_links_from_supabase(limit=10):
+async def get_uncrawled_product_links_from_supabase(limit):
     if not supabase:
         logger.warning("Supabase client not available, skipping fetch")
         return []
     try:
-        response = supabase.table("products").select("product_url").or_("is_review_crawled.is.null,is_review_crawled.eq.false").limit(limit).execute()
+        response = await asyncio.to_thread(
+            lambda: supabase.table("products")
+            .select("product_url")
+            .or_("is_review_crawled.is.null,is_review_crawled.eq.false")
+            .limit(limit)
+            .execute()
+        )
         return [row["product_url"] for row in response.data]
 
     except APIError as e:
