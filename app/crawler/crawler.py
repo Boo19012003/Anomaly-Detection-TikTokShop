@@ -80,7 +80,7 @@ async def crawl_data_review(context, url, semaphore):
         try:
             await page.goto(url, timeout=20000)
             try:
-                await page.wait_for_response("**/get_product_review*", timeout=5000)
+                await page.wait_for_event("response", predicate=lambda r: "get_product_review" in r.url, timeout=5000)
             except PlaywrightTimeoutError: 
                 pass
                 
@@ -97,29 +97,31 @@ async def crawl_data_review(context, url, semaphore):
                 if not await dropdown_btn.is_visible():
                     dropdown_btn = page.locator('div').filter(has_text=re.compile(r"^Sort by$")).locator('..').locator('[data-testid="tux-web-select"]').first
                 
-                await dropdown_btn.scroll_into_view_if_needed(timeout=3000)
-                await dropdown_btn.click(timeout=3000, force=True)
+                if await dropdown_btn.is_visible():
+                    await dropdown_btn.scroll_into_view_if_needed(timeout=3000)
+                    await dropdown_btn.click(timeout=3000, force=True)
 
-                await page.wait_for_timeout(500)
-
-                option_to_click = page.locator('.tux-menu-item').filter(has_text=re.compile(r"Most recent", re.IGNORECASE)).first
-
-                if not await option_to_click.is_visible():
-                    await dropdown_btn.click(timeout=2000, force=True)
                     await page.wait_for_timeout(500)
 
-                await option_to_click.wait_for(state="visible", timeout=3000)
-                await option_to_click.click(timeout=3000, force=True)
+                    option_to_click = page.locator('.tux-menu-item').filter(has_text=re.compile(r"Most recent", re.IGNORECASE)).first
 
-                await page.wait_for_timeout(500)
+                    if not await option_to_click.is_visible():
+                        await dropdown_btn.click(timeout=2000, force=True)
+                        await page.wait_for_timeout(1000)
+
+                    if await option_to_click.is_visible():
+                        await option_to_click.click(timeout=3000, force=True)
+                        await page.wait_for_timeout(500)
+                    else:
+                        logger.debug("Option 'Most recent' not visible after clicking dropdown, continuing with default sort.")
 
             except PlaywrightTimeoutError as e:
-                logger.warning(f"Timeout setting initial review sort: {e}")
+                logger.debug(f"Timeout setting initial review sort, moving on: {e}")
                 await handle_captcha(page, wait_ms=1000)
             except PlaywrightError as e:
-                logger.error(f"Playwright error setting initial review sort: {e}")
+                logger.debug(f"Playwright error setting initial review sort: {e}")
             except Exception as e:
-                logger.error(f"Unexpected error sorting reviews: {e}")
+                logger.debug(f"Unexpected error sorting reviews: {e}")
 
             next_button = page.locator('div.flex.items-center:has(div.Headline-Semibold:text-is("Next"))')
             valid_reviews_count = 0
@@ -142,7 +144,7 @@ async def crawl_data_review(context, url, semaphore):
                     break
                     
                 try:
-                    async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=5000) as response_info:
+                    async with page.expect_response(lambda r: "get_product_reviews" in r.url and r.status == 200, timeout=8000) as response_info:
                         await next_button.click(timeout=2000)
                     
                     response = await response_info.value
@@ -151,7 +153,7 @@ async def crawl_data_review(context, url, semaphore):
                         reviews_list = json_data.get("data", {}).get("product_reviews", [])
                         for rev in reviews_list:
                             text = rev.get("review_text") or ""
-                            if len(text.split()) >= 3:
+                            if len(text.split()) >= 10:
                                 valid_reviews_count += 1
                     except (json.JSONDecodeError, TypeError, KeyError) as e:
                         logger.error(f"Data formatting error parsing reviews response: {e}")
@@ -164,15 +166,15 @@ async def crawl_data_review(context, url, semaphore):
                         break
                     if await handle_captcha(page, wait_ms=1000):
                         continue
-                    logger.warning("Timeout clicking next page, skipping.")
+                    logger.info("Timeout clicking next page (network slow or no reviews), skipping.")
                     break
                 except PlaywrightError as e:
-                    logger.warning(f"Playwright error clicking next page: {e}")
+                    logger.debug(f"Playwright error clicking next page: {e}")
                     if await handle_captcha(page, wait_ms=1000):
                         continue
                     break
                 except Exception as e:
-                    logger.error(f"Unexpected error when attempting to click Next: {e}")
+                    logger.debug(f"Unexpected error when attempting to click Next: {e}")
                     break
 
         except PlaywrightTimeoutError as e:

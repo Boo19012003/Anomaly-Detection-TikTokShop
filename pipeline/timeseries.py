@@ -51,6 +51,10 @@ async def run_pipeline():
         await context.route("**/*", intercept_route)
         logger.info("Pipeline started")
 
+        total_processed = 0
+        total_success = 0
+        total_fail = 0
+
         async with UpsertQueue() as queue:
             while True:
                 product_links = await get_uncrawled_product_links_from_supabase(50) 
@@ -67,15 +71,19 @@ async def run_pipeline():
                     for product_link in product_links
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                success_count = sum(1 for r in results if not isinstance(r, Exception))
-                fail_count = len(results) - success_count
+                batch_success = sum(1 for r in results if not isinstance(r, Exception))
+                batch_fail = len(results) - batch_success
+                
+                total_processed += len(results)
+                total_success += batch_success
+                total_fail += batch_fail
 
         await context.close()
         await browser.close()
         
         logger.info(
-            f"Pipeline finished. Processed: {len(results)} products | "
-            f"Success: {success_count} | Failed: {fail_count}"
+            f"Pipeline finished. Processed: {total_processed} products | "
+            f"Success: {total_success} | Failed: {total_fail}"
         )
 
 if __name__ == "__main__":

@@ -88,6 +88,8 @@ except (ImportError, RuntimeError, OSError) as e:
     yolo_model = None
 
 
+yolo_lock = asyncio.Lock()
+
 async def solve_tiktok_captcha(page):
     if yolo_model is None:
         logger.error("Cannot solve captcha because YOLO model is not loaded.")
@@ -113,7 +115,8 @@ async def solve_tiktok_captcha(page):
         bg_array = np.asarray(bytearray(image_bytes), dtype=np.uint8)
         bg_img = cv2.imdecode(bg_array, cv2.IMREAD_COLOR)
 
-        results = await asyncio.to_thread(yolo_model, bg_img, verbose=False)
+        async with yolo_lock:
+            results = await asyncio.to_thread(yolo_model, bg_img, verbose=False)
         boxes = results[0].boxes
 
         if len(boxes) == 0:

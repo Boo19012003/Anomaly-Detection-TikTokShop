@@ -1,139 +1,160 @@
 import asyncio
+from typing import Dict, List
 from app.config.settings import get_logger, UPSERT_BATCH_SIZE, UPSERT_FLUSH_INTERVAL
 from app.database.crud import upsert_to_supabase
 
 logger = get_logger("UpsertQueue")
 
-TABLE_KEYS = ("shops", "products", "products_metrics_history", "reviews")
-
+PRIMARY_KEYS = {
+    "shops": "shop_id",
+    "products": "product_url",
+    "reviews": "review_id",
+    "products_metrics_history": None 
+}
 
 class UpsertQueue:
-
     def __init__(
         self,
         batch_size: int = UPSERT_BATCH_SIZE,
         flush_interval: int = UPSERT_FLUSH_INTERVAL,
-        on_flush=None,
+        max_retries: int = 3,
+        on_flush=None
     ):
         self._batch_size = batch_size
         self._flush_interval = flush_interval
-        self._on_flush = on_flush
+        self._max_retries = max_retries
+        self.on_flush = on_flush
 
-        # Per-table accumulation buffer
-        self._buffer: dict[str, list] = {key: [] for key in TABLE_KEYS}
-        # URLs attached to buffered data (used by review pipeline callback)
-        self._pending_urls: list[str] = []
-
+        self._buffer: Dict[str, Dict[str, dict]] = {}
+        self._list_buffer: Dict[str, List[dict]] = {}
+        self._url_buffer: set = set()
+        
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
-        self._item_count = 0
 
-    # ------------------------------------------------------------------
-    # Context manager
-    # ------------------------------------------------------------------
+        self.stats = {"upserted": 0, "failed": 0, "retries": 0}
+
     async def __aenter__(self):
-        await self.start()
+        self._flush_task = asyncio.create_task(self._auto_flush_loop())
         return self
 
-    async def __aexit__(self):
-        await self.stop()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._flush_task:
+            self._flush_task.cancel()
+        await self.flush_all()
         return False
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-    async def start(self):
-        """Start the periodic auto-flush background task."""
-        if self._flush_task is None:
-            self._flush_task = asyncio.create_task(self._auto_flush_loop())
-            logger.debug(
-                f"UpsertQueue started (batch_size={self._batch_size}, "
-                f"flush_interval={self._flush_interval}s)"
-            )
-
-    async def stop(self):
-        """Flush remaining data and cancel the background task."""
-        if self._flush_task is not None:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
-            self._flush_task = None
-
-        # Final flush to make sure nothing is left in the buffer
-        await self.flush()
-        logger.debug("UpsertQueue stopped")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-    async def add(self, structured_data: dict, url: str | None = None):
-        """Add *structured_data* to the internal buffer.
-
-        If *url* is provided it will be collected and forwarded to the
-        *on_flush* callback after the batch that contains it is persisted.
-        """
+    async def add(self, structured_data: dict, url: str = None):
+        """Thêm dữ liệu vào bộ đệm và lọc trùng lặp ngay từ lúc thêm (DE logic)"""
         if not isinstance(structured_data, dict):
-            logger.warning(f"Ignoring non-dict data: {type(structured_data)}")
             return
 
         async with self._lock:
-            for key in TABLE_KEYS:
-                items = structured_data.get(key)
-                if items:
-                    if isinstance(items, list):
-                        self._buffer[key].extend(items)
-                        self._item_count += len(items)
-                    else:
-                        self._buffer[key].append(items)
-                        self._item_count += 1
+            if url:
+                self._url_buffer.add(url)
+            for table_name, items in structured_data.items():
+                if not items:
+                    continue
+                    
+                if not isinstance(items, list):
+                    items = [items]
 
-            if url is not None:
-                self._pending_urls.append(url)
+                pk_field = PRIMARY_KEYS.get(table_name)
 
-        # Flush immediately if buffer exceeds batch size
-        if self._item_count >= self._batch_size:
-            await self.flush()
+                if pk_field:
+                    if table_name not in self._buffer:
+                        self._buffer[table_name] = {}
+                    for item in items:
+                        if pk_field in item:
+                            self._buffer[table_name][item[pk_field]] = item 
+                else:
+                    if table_name not in self._list_buffer:
+                        self._list_buffer[table_name] = []
+                    self._list_buffer[table_name].extend(items)
 
-    async def flush(self):
-        """Merge the buffer into a single dict and upsert to Supabase."""
+        await self._check_and_flush()
+
+    async def _check_and_flush(self):
+        """Chỉ flush những bảng đã đủ số lượng, không flush toàn bộ"""
+        tables_to_flush = {}
+        urls_to_flush = []
+        
         async with self._lock:
-            if self._item_count == 0:
-                return
+            for table, records in list(self._buffer.items()):
+                if len(records) >= self._batch_size:
+                    tables_to_flush[table] = list(records.values())
+                    self._buffer[table].clear()
 
-            # Snapshot and reset
-            batch = {key: list(self._buffer[key]) for key in TABLE_KEYS if self._buffer[key]}
-            flushed_urls = list(self._pending_urls)
-            flushed_count = self._item_count
+            for table, records in list(self._list_buffer.items()):
+                if len(records) >= self._batch_size:
+                    tables_to_flush[table] = list(records)
+                    self._list_buffer[table].clear()
 
-            for key in TABLE_KEYS:
-                self._buffer[key].clear()
-            self._pending_urls.clear()
-            self._item_count = 0
+            if tables_to_flush:
+                urls_to_flush = list(self._url_buffer)
+                self._url_buffer.clear()
 
-        # Perform the actual upsert outside the lock
-        logger.info(f"Flushing batch of {flushed_count} items to Supabase")
-        success = await upsert_to_supabase(batch)
+        if tables_to_flush:
+            await self._execute_upsert_with_retry(tables_to_flush, urls_to_flush)
 
-        if success and self._on_flush and flushed_urls:
-            try:
-                await self._on_flush(flushed_urls)
-            except Exception as e:
-                logger.error(f"on_flush callback error: {e}")
+    async def flush_all(self):
+        """Ép buộc xả toàn bộ dữ liệu đang có (Dùng khi shutdown pipeline)"""
+        tables_to_flush = {}
+        urls_to_flush = []
+        async with self._lock:
+            for table, records in list(self._buffer.items()):
+                if records:
+                    tables_to_flush[table] = list(records.values())
+                    self._buffer[table].clear()
+            for table, records in list(self._list_buffer.items()):
+                if records:
+                    tables_to_flush[table] = list(records)
+                    self._list_buffer[table].clear()
+            if tables_to_flush:
+                urls_to_flush = list(self._url_buffer)
+                self._url_buffer.clear()
 
-        return success
+        if tables_to_flush:
+            await self._execute_upsert_with_retry(tables_to_flush, urls_to_flush)
 
-    # ------------------------------------------------------------------
-    # Background auto-flush
-    # ------------------------------------------------------------------
+    async def _execute_upsert_with_retry(self, batch: dict, urls: list = None):
+        """Hành động quan trọng của DE: Đẩy data lên DB và có cơ chế Retry/Rollback"""
+        total_items = sum(len(v) for v in batch.values())
+        logger.info(f"Uploading batch of {total_items} records...")
+
+        for attempt in range(1, self._max_retries + 1):
+            success = await upsert_to_supabase(batch)
+            if success:
+                self.stats["upserted"] += total_items
+                if self.on_flush and urls:
+                    try:
+                        if asyncio.iscoroutinefunction(self.on_flush):
+                            await self.on_flush(urls)
+                        else:
+                            self.on_flush(urls)
+                    except Exception as e:
+                        logger.error(f"Error in on_flush callback: {e}")
+                return True
+            
+            self.stats["retries"] += 1
+            logger.warning(f"Upsert failed! Retrying {attempt}/{self._max_retries} in 2 seconds...")
+            await asyncio.sleep(2)
+
+        self.stats["failed"] += total_items
+        logger.error("Max retries reached. Saving failed batch to Dead Letter Queue (DLQ.json)...")
+        self._save_to_dlq(batch)
+        return False
+
+    def _save_to_dlq(self, batch: dict):
+        import json, time
+        filename = f"dlq_batch_{int(time.time())}.json"
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(batch, f, ensure_ascii=False)
+
     async def _auto_flush_loop(self):
-        """Periodically flush the buffer regardless of size."""
         try:
             while True:
                 await asyncio.sleep(self._flush_interval)
-                if self._item_count > 0:
-                    logger.debug(f"Auto-flush triggered ({self._item_count} items buffered)")
-                    await self.flush()
+                await self.flush_all()
         except asyncio.CancelledError:
             pass
