@@ -31,7 +31,7 @@ TikTokShop/
 └── requirements.txt
 ```
 
-## 🛠️ Prerequisites
+## Prerequisites
 
 - Python 3.9+
 - [Node.js](https://nodejs.org/) (Optional: required for `gitnexus` code indexing)
