@@ -2,7 +2,7 @@
 
 A highly scalable, asynchronous web scraping and data processing pipeline for TikTok Shop. Built with Python, Playwright, and Supabase, this system is capable of systematically extracting product details, user reviews, and timeseries data while automatically bypassing captchas using Computer Vision.
 
-## 🚀 Key Features
+## Key Features
 
 - **Asynchronous Data Collection**: Utilizes `asyncio` and `playwright` to process multiple URLs concurrently.
 - **Automated Captcha Solving**: Integrates `ultralytics` YOLO models and `opencv` to automatically detect and solve TikTok's puzzles/captchas mimicking human mouse movement.
@@ -10,7 +10,7 @@ A highly scalable, asynchronous web scraping and data processing pipeline for Ti
 - **Cloud-Ready Logging**: Extensive standard logging configuration designed to be caught by cloud platforms (AWS CloudWatch, GCP Logging, etc.) for job schedulers.
 - **Supabase Integration**: Automatically upserts cleaned, structured data into PostgreSQL via the Supabase client.
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 TikTokShop/
@@ -36,7 +36,7 @@ TikTokShop/
 - Python 3.9+
 - [Node.js](https://nodejs.org/) (Optional: required for `gitnexus` code indexing)
 
-## 📦 Installation
+## Installation
 
 1. **Clone the repository:**
    ```bash
@@ -63,7 +63,7 @@ TikTokShop/
    SUPABASE_KEY="your-anon-or-service-role-key"
    ```
 
-## 🏃 Usage
+## Usage
 
 This project separates data harvesting tasks into independent pipelines. These scripts can be run locally or configured as Cron jobs/Airflow tasks in the cloud.
 
@@ -85,5 +85,5 @@ This project separates data harvesting tasks into independent pipelines. These s
    python pipeline/timeseries.py
    ```
 
-## 🛡️ License
+## License
 Proprietary/Internal System - Internal use only.
